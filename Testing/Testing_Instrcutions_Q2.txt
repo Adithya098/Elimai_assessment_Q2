@@ -1,0 +1,78 @@
+Step-by-Step Instructions to Test OCR PDF Upload in Postman
+
+Endpoint: `/upload`
+
+1. Open Postman.
+
+2. Set HTTP method to `POST` from the dropdown.
+
+3. Enter the request URL:
+   `http://127.0.0.1:8000/upload`
+
+4. Click the `Body` tab below the URL field.
+
+5. Select `form-data`.
+
+6. Configure the file upload field:
+
+   	* In the Key column, enter: `files`
+     	*(This is the parameter expected by your FastAPI route: `files: List[UploadFile]`)*
+   	* On the right side of the key, change the dropdown from `Text` to `File`.
+   	* Click “Select Files” in the Value column.
+   	* Choose a PDF file to upload (e.g., `report.pdf`).
+
+7. Make sure the backend app is running.
+
+8. Click `Send`.
+
+---
+ 🔍 How to Test Endpoints in Postman
+
+
+ 1. Health Check
+
+* Method: `GET`
+* URL: `http://127.0.0.1:8000/health`
+* Auth/Headers: None required
+* Expected Output: A JSON object with a `success` field, version info, and timestamp.
+
+
+ 2. Upload PDF for OCR Extraction
+
+* Method: `POST`
+* URL: `http://127.0.0.1:8000/upload`
+* Body:
+  * Type: `form-data`
+  * Key: `files` → (Set to `File`)
+  * Value: Select a valid `.pdf` file
+
+* Expected Output:
+  ✅ A JSON object like:
+
+  {
+    "success": true,
+    "message": "PDF processed successfully",
+    "error": null,
+    "timestamp": "2025-05-25T12:00:00Z",
+    "data": {
+      "patient": {
+        "name": "John Doe",
+        "dob": "1980-01-01"
+      },
+      "investigations": [
+        {
+          "type": "Blood Test",
+          "result": "Normal"
+        }
+      ]
+    }
+  }
+  
+
+* ⚠️ If the file is not a PDF, the response will be:
+
+  json
+  {
+    "detail": "filename.txt is not a PDF"
+  }
+  

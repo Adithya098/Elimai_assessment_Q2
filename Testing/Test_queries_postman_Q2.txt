@@ -1,0 +1,91 @@
+POST - http://127.0.0.1:8000/upload
+
+// Test 1: Response status code is 200
+pm.test("Response status code is 200", function () {
+  pm.response.to.have.status(200);
+});
+
+// Test 2: Top-level response schema contains all required fields
+pm.test("Validate presence of top-level response fields", function () {
+  const responseData = pm.response.json();
+  pm.expect(responseData).to.have.all.keys("success", "message", "error", "timestamp", "data");
+});
+
+// Test 3: Patient information fields are present and valid
+pm.test("Patient information fields are present and non-empty", function () {
+  const responseData = pm.response.json();
+  const patientInfo = responseData.data.patient;
+
+  pm.expect(patientInfo).to.be.an('object');
+  const requiredFields = ["patient_name", "age_sex", "patient_id", "sid_no", "collected_date", "reported_date", "ref_by"];
+  requiredFields.forEach(field => {
+    pm.expect(patientInfo[field], `${field} is missing or empty`).to.exist.and.to.not.be.empty;
+  });
+});
+
+// Test 4: Investigations are present and valid
+pm.test("Investigations array is present and has entries", function () {
+  const responseData = pm.response.json();
+  const investigations = responseData.data.investigations;
+
+  pm.expect(investigations).to.be.an("array").that.has.length.greaterThan(0);
+
+  investigations.forEach((inv, index) => {
+    pm.expect(inv).to.have.property("test_name");
+    pm.expect(inv).to.have.property("results");
+    pm.expect(inv.results).to.have.property("value");
+  });
+});
+
+// Test 5: Response is valid JSON
+pm.test("Response is in valid JSON format", function () {
+    pm.response.to.be.withBody;
+    pm.response.to.be.json;
+});
+
+// Test 6: Timestamp is a valid ISO string
+pm.test("Timestamp is present and valid ISO format", function () {
+    const timestamp = pm.response.json().timestamp;
+    const isoRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z?$/;
+    pm.expect(timestamp).to.match(isoRegex);
+});
+
+// Test 7: Error field should be null for success
+pm.test("Error field is null on success", function () {
+    const error = pm.response.json().error;
+    pm.expect(error).to.be.null;
+});
+
+// Test 8: Data object contains both patient and investigations
+pm.test("Data object contains both patient and investigations", function () {
+    const data = pm.response.json().data;
+    pm.expect(data).to.have.keys("patient", "investigations");
+});
+
+// Test 9: Each investigation result has numeric value or valid fallback
+pm.test("Each investigation result has numeric value", function () {
+    const investigations = pm.response.json().data.investigations;
+    investigations.forEach((inv, index) => {
+        const value = inv.results.value;
+        const valid = typeof value === "number" || (!isNaN(Number(value)) && value !== "");
+        pm.expect(valid, `Investigation #${index + 1} has invalid value`).to.be.true;
+    });
+});
+
+// Test 10 : data.patient is not just present, but has non-empty fields
+pm.test("Patient object is not empty", function () {
+    const patient = pm.response.json().data.patient;
+    const keys = Object.keys(patient);
+    pm.expect(keys.length, "Patient object has no fields").to.be.greaterThan(0);
+
+    keys.forEach(key => {
+        pm.expect(patient[key], `${key} is empty`).to.exist.and.to.not.eql("");
+    });
+});
+
+// Test 11 : data.investigations has at least one valid investigation with name and result
+pm.test("Investigations contain at least one valid test", function () {
+    const investigations = pm.response.json().data.investigations;
+    const hasValid = investigations.some(inv => inv.test_name && inv.results && inv.results.value !== undefined);
+    pm.expect(hasValid, "No valid investigation found").to.be.true;
+});

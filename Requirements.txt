@@ -1,0 +1,27 @@
+# Core Application
+fastapi==0.109.2
+uvicorn==0.27.0
+python-multipart==0.0.9
+
+# Data Processing
+pandas==2.2.1
+openpyxl==3.1.2
+
+# Azure Services (both older and newer versions)
+azure-cognitiveservices-vision-computervision==7.0.0  # Legacy v2
+azure-ai-vision==0.15.1b1  # New v3 (preview)
+azure-cognitiveservices-speech==1.37.0  # For speech recognition
+azure-identity==1.15.0  # Modern authentication
+
+# Environment & Utilities
+python-dotenv==1.0.1
+httpx==0.27.0
+msrest==0.7.1  # For legacy Azure auth
+aiofiles==23.2.1  # Async file operations
+
+# Data Validation & Settings
+pydantic==2.6.4
+pydantic-settings==2.2.1
+
+# Async Support (if needed)
+anyio==4.3.0

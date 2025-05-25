@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF OCR Extractor</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css"> <!-- External CSS file link -->
+</head>
+
+<body>
+  <!-- Main content container -->
+  <div class="container">
+    <h2>Upload PDF for OCR Extraction</h2>
+
+    <!-- Record Audio section (replaced with file upload section) -->
+    <div>
+      <span class="action-label">Upload PDF:</span>
+      <input type="file" id="fileInput" accept="application/pdf" multiple />
+    </div>
+
+    <!-- Upload PDF button -->
+    <div class="button-container" style="margin-top: 20px;">
+      <button onclick="uploadPDF()">Upload & Extract</button>
+    </div>
+
+    <!-- Status display area -->
+    <p id="status">Please upload a PDF file to begin the OCR extraction.</p>
+
+    <!-- JSON output area -->
+    <div id="jsonOutput" class="results-container">
+      JSON output will appear here...
+    </div>
+  </div>
+
+  <!-- Link to the external JavaScript file -->
+  <script src="/static/app.js"></script> 
+</body>
+
+</html>

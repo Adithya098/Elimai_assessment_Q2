@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# FastAPI / Uvicorn logs
+*.log
+
+# Virtual Environments
+venv/
+env/
+.venv/
+ENV/
+
+# .env files (security)
+.env
+.env.*
+
+# PyCharm / VSCode settings
+.idea/
+.vscode/
+
+# Static asset cache
+static/*.cache.*
+static/*~
+
+# Coverage / test
+.coverage
+htmlcov/
+.tox/
+.nox/
+.pytest_cache/
+coverage.xml
+nosetests.xml
+test-results/
+
+# System files
+*.swp
+*.swo

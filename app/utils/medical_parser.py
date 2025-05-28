@@ -51,14 +51,16 @@ class MedicalTestParser:
         return patterns
 
     def extract_investigations(self, ocr_data: Dict[str, List[Dict]]) -> Dict:
+        # Extracts medical test results and reference ranges from OCR text based on predefined patterns.
+        
         lines = ocr_data.get("lines", [])
         full_text = ocr_data.get("full_text", "")
-        
-        logger.info(f"Processing {len(lines)} lines for medical parsing")
-        
+
+        # logger.info(f"Processing {len(lines)} lines for medical parsing")
+
         investigations = []
         current_category = None
-        
+
         # Keep track of all lines for context-aware parsing
         all_lines = [line_obj.get("text", "").strip() for line_obj in lines]
 
@@ -72,11 +74,12 @@ class MedicalTestParser:
             # Try detecting category from header lines
             lower_line = line.lower()
             old_category = current_category
-            
+
             # More flexible category detection
             for cat in self.valid_categories:
                 if (cat.lower() in lower_line or 
                     any(keyword in lower_line for keyword in [f"{cat}:", f"{cat} test", f"{cat} report", f"{cat} -"])):
+
                     current_category = cat
                     logger.info(f"Found category '{cat}' in line: {line}")
                     break
@@ -91,15 +94,21 @@ class MedicalTestParser:
             # Match known test patterns under current category
             category_patterns = self.test_patterns.get(current_category, [])
             logger.debug(f"Testing {len(category_patterns)} patterns for category {current_category}")
-            
+
             for pattern, test_name in category_patterns:
                 if re.search(pattern, line, re.IGNORECASE):
                     logger.info(f"Pattern matched! Test: {test_name}, Line: {line}")
-                    
-                    # Try to find the actual test result in the next few lines
+
+                    # Try to find the actual test result in the next few lines, also extracting reference range
                     result = self._parse_test_with_context(current_category, test_name, line, all_lines, i)
-                    
+
+                    # Extract the reference range for the matched test
+                    reference_range = self._extract_reference_range(full_text, test_name)
+
                     if result:
+                        # Include reference range if found
+                        result["reference_range"] = reference_range if reference_range else "Not available"
+
                         investigations.append(result)
                         logger.info(f"Successfully parsed test: {test_name}")
                     else:
@@ -109,7 +118,7 @@ class MedicalTestParser:
                 logger.debug(f"No patterns matched for line: {line}")
 
         logger.info(f"Medical parser extracted {len(investigations)} investigations")
-        
+
         return {
             "success": True,
             "message": "Extraction successful",
@@ -121,16 +130,44 @@ class MedicalTestParser:
             "error": None
         }
 
+    def _extract_reference_range(self, text: str, test_name: str) -> Optional[str]:
+        '''Simple extraction of reference range'''
+        
+        # Find the test name in text and look around it for a range pattern
+        test_pos = text.lower().find(test_name.lower())
+        if test_pos == -1:
+            return None
+        
+        # Look in a window around the test (200 chars before and after)
+        start = max(0, test_pos - 100)
+        end = min(len(text), test_pos + len(test_name) + 200)
+        search_text = text[start:end]
+        
+        # Simple pattern for ranges like "40.0 - 65.0"
+        range_pattern = r'(\d+\.?\d*\s*-\s*\d+\.?\d*)'
+        
+        match = re.search(range_pattern, search_text)
+        if match:
+            return match.group(1).strip()
+        
+        return None
+
+
     def _parse_test_with_context(self, category: str, test_name: str, current_line: str, all_lines: List[str], line_index: int) -> Optional[Dict]:
         """Parse test with context from surrounding lines"""
         
         # Try parsing the current line first
         result = self._parse_test_line(category, test_name, current_line)
         if result:
+            # If no reference range found, try to extract from current line
+            if not result.get("results", {}).get("reference_range"):
+                ref_range = self._extract_reference_range(current_line, test_name)
+                if ref_range:
+                    result["results"]["reference_range"] = ref_range
             return result
         
         # If current line doesn't have the value, look in the next few lines
-        search_range = min(5, len(all_lines) - line_index - 1)  # Look ahead up to 5 lines
+        search_range = min(5, len(all_lines) - line_index - 1)
         
         for offset in range(1, search_range + 1):
             if line_index + offset < len(all_lines):
@@ -140,6 +177,11 @@ class MedicalTestParser:
                 combined_line = f"{current_line} {next_line}"
                 result = self._parse_test_line(category, test_name, combined_line)
                 if result:
+                    # Try to extract reference range from combined context
+                    if not result.get("results", {}).get("reference_range"):
+                        ref_range = self._extract_reference_range(combined_line, test_name)
+                        if ref_range:
+                            result["results"]["reference_range"] = ref_range
                     logger.debug(f"Found result in combined lines: {combined_line}")
                     return result
                 
@@ -152,27 +194,29 @@ class MedicalTestParser:
         
         return None
 
-    def _line_contains_numeric_value(self, line: str) -> bool:
-        """Check if line contains a numeric value that could be a test result"""
-        return bool(re.search(r'\d+\.?\d*', line))
-
     def _parse_test_line(self, category: str, test_name: str, line: str) -> Optional[Dict]:
-        """Parse a test line to extract value, units, etc."""
+        """Enhanced test line parser with better reference range extraction"""
         
         logger.debug(f"Parsing line for {test_name}: {line}")
         
-        # Multiple parsing patterns to try
+        # Enhanced parsing patterns that capture reference ranges
         patterns = [
             # Pattern 1: Test Name: Value Units [Range] Flag
-            r'(?P<name>.*?)\s*[:\-]\s*(?P<value>\d+\.?\d*)\s*(?P<units>[a-zA-Z%/\.\s]+)?\s*(?P<range>\[?[\d\s\-to\.]+[\-to\s]+[\d\s\.]+[a-zA-Z%/\.\s]*\]?)?\s*(?P<flag>[HL])?',
+            r'(?P<name>.*?)\s*[:\-]\s*(?P<value>\d+\.?\d*)\s*(?P<units>[a-zA-Z%/\.\s]+?)?\s*(?:\[(?P<range>[\d\s\-–to\.]+(?:[a-zA-Z%/\.\s]*)?)\])?\s*(?:\((?P<range2>[\d\s\-–to\.]+(?:[a-zA-Z%/\.\s]*)?)\))?\s*(?P<flag>[HL])?',
             
-            # Pattern 2: Value Units Flag (when test name is already known)
-            r'^\s*(?P<value>\d+\.?\d*)\s*(?P<units>[a-zA-Z%/\.\s]+?)?\s*(?P<range>\[?[\d\s\-to\.]+[\-to\s]+[\d\s\.]+[a-zA-Z%/\.\s]*\]?)?\s*(?P<flag>[HL])?\s*$',
+            # Pattern 2: Test Name: Value Units (Reference: range)
+            r'(?P<name>.*?)\s*[:\-]\s*(?P<value>\d+\.?\d*)\s*(?P<units>[a-zA-Z%/\.\s]+?)?\s*(?:reference|ref|normal)?\s*:?\s*(?P<range>[\d\.\s\-–to]+(?:[a-zA-Z%/\.\s]*)?)\s*(?P<flag>[HL])?',
             
-            # Pattern 3: Simple Value Units
+            # Pattern 3: Value Units Flag Range
+            r'^\s*(?P<value>\d+\.?\d*)\s*(?P<units>[a-zA-Z%/\.\s]+?)?\s*(?P<flag>[HL])?\s*(?P<range>[\d\.\s\-–to]+(?:[a-zA-Z%/\.\s]*)?)\s*$',
+            
+            # Pattern 4: Value Units (range) Flag
+            r'^\s*(?P<value>\d+\.?\d*)\s*(?P<units>[a-zA-Z%/\.\s]+?)?\s*(?:\((?P<range>[\d\s\-–to\.]+(?:[a-zA-Z%/\.\s]*)?)\))?\s*(?P<flag>[HL])?\s*$',
+            
+            # Pattern 5: Simple Value Units Flag
             r'(?P<value>\d+\.?\d*)\s+(?P<units>[a-zA-Z%/\.]+)\s*(?P<flag>[HL])?',
             
-            # Pattern 4: Just Value (minimal case)
+            # Pattern 6: Just Value (minimal case)
             r'(?P<value>\d+\.?\d*)'
         ]
 
@@ -196,9 +240,14 @@ class MedicalTestParser:
                 flag = match.groupdict().get('flag', '')
                 flag = flag.upper() if flag else None
                 
-                ref_range = match.groupdict().get('range', '')
+                # Get reference range from either range or range2 group
+                ref_range = match.groupdict().get('range') or match.groupdict().get('range2', '')
                 if ref_range:
-                    ref_range = re.sub(r'\s*(–|to|−)\s*', ' - ', ref_range.strip('[] '))
+                    ref_range = self._normalize_reference_range(ref_range.strip())
+                
+                # If no range found in pattern, try extracting from the full line
+                if not ref_range:
+                    ref_range = self._extract_reference_range(line, test_name)
                 
                 result_data = {
                     "value": value,
@@ -219,6 +268,10 @@ class MedicalTestParser:
 
         logger.debug(f"No patterns matched for line: {line}")
         return None
+
+    def _line_contains_numeric_value(self, line: str) -> bool:
+        """Check if line contains a numeric value that could be a test result"""
+        return bool(re.search(r'\d+\.?\d*', line))
 
     def get_canonical_test_name(self, name: str) -> str:
         """Resolves the canonical name using test_name_fields"""

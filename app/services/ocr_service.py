@@ -25,7 +25,6 @@ from app.utils.medical_parser import MedicalTestParser
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from azure.cognitiveservices.vision.computervision.models import OperationStatusCodes
 from msrest.authentication import CognitiveServicesCredentials
-from app.services.template_service import TemplateService
 from app.services.get_test_names import test_name_fields
 from app.utils.table_parser import TableLineParser
 from app.utils.patient_info import PatientInfoExtractor
@@ -113,63 +112,94 @@ class OCRService:
         # Fallback return if timeout reached
         return self.process_ocr_results(result)
 
+
     def process_ocr_results(self, read_result) -> APIResponse:
-        '''Processes OCR results to extract patient and test information'''
+        '''Processes OCR results to extract patient and test information using medical parser only'''
 
-        # Collect all lines from OCR output
-        lines = [line.text for page in read_result.analyze_result.read_results for line in page.lines]
-        line_dicts = [{"text": line} for line in lines]
-        full_text = "\n".join(lines)
+        try:
+            # Extract text data from OCR results
+            lines = [line.text for page in read_result.analyze_result.read_results for line in page.lines]
+            
+            if not lines:
+                raise ValueError("No text lines found in OCR results")
+            
+            line_dicts = [{"text": line} for line in lines]
+            full_text = "\n".join(lines)
 
-        '''
-        # Log some diagnostic output
-        logger.debug(f"Full OCR text extracted ({len(full_text)} characters)")
-        logger.info(f"Sample OCR lines: {lines[:10]}")
-        '''
-        
-        # Extract patient metadata
-        # patient_info = self.extract_patient_info_simplified(full_text)
-        
-        # Extract patient metadata using PatientInfoExtractor from 'patient_info.py'
-        patient_info_extractor = PatientInfoExtractor()
-        patient_info = patient_info_extractor.extract_patient_information({"lines": [{"text": line} for line in lines]})
+            logger.debug(f"Extracted {len(lines)} lines, {len(full_text)} characters")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Sample lines: {lines[:5]}")
 
-        # Extract tests using template parser
-        template_parser = TemplateService(settings.TEMPLATE_PATH)
-        investigations_template = template_parser.extract_investigations(full_text)
+            # Extract patient metadata using PatientInfoExtractor
+            patient_info = self._extract_patient_info(line_dicts)
 
-        # Extract using medical keyword parser
-        investigations_medical_raw = self.medical_parser.extract_investigations({
-            "full_text": full_text,
-            "lines": line_dicts
-        })
+            # Extract investigations using medical parser only
+            investigations = self._extract_investigations_medical_parser(full_text, line_dicts)
 
-        # Normalize parser return value
-        if isinstance(investigations_medical_raw, dict):
-            investigations_medical = investigations_medical_raw.get("data", {}).get("investigations", [])
-        else:
-            logger.error(f"Medical parser returned unexpected type: {type(investigations_medical_raw)}")
-            investigations_medical = []
+            # Create and return unified result
+            extraction_result = ExtractionResult(
+                patient_information=patient_info,  
+                investigations=investigations,
+                source="OCR Document",
+            )
 
-        # Extract from tabular test lines
-        investigations_table = self.extract_table_investigations(read_result)
+            logger.info(f"Extracted {len(investigations)} investigations")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Investigations:\n%s", json.dumps(investigations, indent=2))
+                
+            return extraction_result
 
-        # Combine all investigations into one list
-        investigations = self.merge_investigation_results(
-            medical_results=investigations_medical + investigations_template,
-            table_results=investigations_table
-        )
+        except Exception as e:
+            logger.error(f"Error processing OCR results: {str(e)}", exc_info=True)
+            return self._create_error_response(e)
 
-        # Return unified result object
-        extraction_result = ExtractionResult(
-            patient_information=patient_info,  
-            investigations=investigations,
+    def _extract_patient_info(self, line_dicts: List[Dict]) -> Dict:
+        '''Extract patient information using PatientInfoExtractor'''
+        try:
+            patient_info_extractor = PatientInfoExtractor()
+            patient_info = patient_info_extractor.extract_patient_information({"lines": line_dicts})
+            
+            logger.info(f"Extracted patient info: {patient_info.get('name', 'Unknown')}")
+            return patient_info
+            
+        except Exception as e:
+            logger.error(f"Failed to extract patient info: {str(e)}")
+            return {}
+
+    def _extract_investigations_medical_parser(self, full_text: str, line_dicts: List[Dict]) -> List[Dict]:
+        '''Extract investigations using medical parser only'''
+        try:
+            # Prepare data for medical parser
+            ocr_data = {
+                "full_text": full_text,
+                "lines": line_dicts
+            }
+            
+            # Extract using medical parser
+            parser_result = self.medical_parser.extract_investigations(ocr_data)
+            
+            # Handle the structured response from medical parser
+            if isinstance(parser_result, dict) and parser_result.get("success"):
+                investigations = parser_result.get("data", {}).get("investigations", [])
+                logger.info(f"Medical parser extracted {len(investigations)} investigations")
+                return investigations
+            else:
+                error_msg = parser_result.get("error", "Unknown error") if isinstance(parser_result, dict) else "Invalid response format"
+                logger.error(f"Medical parser failed: {error_msg}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Medical parser failed with exception: {str(e)}", exc_info=True)
+            return []
+
+    def _create_error_response(self, error: Exception) -> ExtractionResult:
+        '''Create error response for failed processing'''
+        return ExtractionResult(
+            patient_information={},
+            investigations=[],
             source="OCR Document",
-            quality_notes=None
+            quality_notes=f"Processing failed: {str(error)}"
         )
-
-        logger.info("Extracted Investigations:\n%s", json.dumps(investigations, indent=2))
-        return extraction_result
 
     '''
     def extract_patient_info_simplified(self, text: str) -> Dict[str, str]:

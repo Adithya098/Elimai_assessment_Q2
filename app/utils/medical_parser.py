@@ -4,7 +4,6 @@
 Parses OCR text from medical documents to extract structured test results by matching
 known test name patterns and extracting relevant values, units, flags, and reference ranges.
 '''
-
 import re
 import logging
 from typing import List, Dict, Optional, Tuple
@@ -31,6 +30,7 @@ class MedicalTestParser:
         
         logger.info(f"Valid categories: {self.valid_categories}")
 
+
     def _build_test_patterns(self) -> Dict[str, List[Tuple[str, str]]]:
         patterns = {}
         for field in test_name_fields:
@@ -45,31 +45,38 @@ class MedicalTestParser:
             patterns[section].append((pattern, field.field_name))
         return patterns
 
+
     def extract_investigations(self, ocr_data: Dict[str, List[Dict]]) -> Dict:
         lines = ocr_data.get("lines", [])
-        full_text = ocr_data.get("full_text", "")
         investigations = []
         current_category = None
-        all_lines = [line_obj.get("text", "").strip() for line_obj in lines]
 
         # --- Step 1: Split into blocks between specimens ---
         specimen_keywords = {"EDTA", "URINE", "PLASMA", "SERUM", "WHOLE"}
         blocks = []
         current_block = []
+        MAX_LINES_PER_BLOCK = 8
 
         for line_obj in lines:
             text = line_obj.get("text", "").strip()
             upper_text = text.upper()
 
+            # If it's a specimen keyword — start new block
             if any(spec in upper_text for spec in specimen_keywords):
                 if current_block:
                     blocks.append(current_block)
-                current_block = [text]
-            else:
+                current_block = [text]  # Start fresh block
+            
+            else:   # Else - Add to Current Block
                 current_block.append(text)
+                # If block is too long, split it
+                if len(current_block) >= MAX_LINES_PER_BLOCK:
+                    blocks.append(current_block)
+                    current_block = []
 
+        # Don't forget to add the last block
         if current_block:
-            blocks.append(current_block)
+            blocks.append(current_block) if current_block else []
 
         logger.info(f"Split OCR lines into {len(blocks)} blocks based on specimen keywords")
 
@@ -81,11 +88,14 @@ class MedicalTestParser:
             print("─" * 50)
     
         # --- Step 2: Process blocks ---
+        previous_category = None  # Initialize before block loop
+
         for block in blocks:
             block_text = " ".join(block)
             lower_block_text = block_text.lower()
 
             # Try detecting category from text
+            current_category = None
             for cat in self.valid_categories:
                 if (cat.lower() in lower_block_text or 
                     any(keyword in lower_block_text for keyword in [f"{cat}:", f"{cat} test", f"{cat} report", f"{cat} -"])):
@@ -93,17 +103,28 @@ class MedicalTestParser:
                     logger.info(f"Found category '{cat}' in block: {block[:2]}")
                     break
 
+            # If no category found, use previous if available
             if not current_category:
-                logger.debug("No category set, skipping block.")
-                continue
+                if previous_category:
+                    logger.info(f"No new category found. Using previous category '{previous_category}' for block: {block[:2]}")
+                    current_category = previous_category
+                else:
+                    logger.warning(f"No category available for block: {block[:2]}")
+                    current_category = None  # Fall back value
 
-            category_patterns = self.test_patterns.get(current_category, [])
+            # Save current category for the next round
+            previous_category = current_category
 
+            # Get relevant test patterns
+            category_patterns = self.test_patterns.get(current_category, []) if current_category else []
+
+            # Checks if any known test name pattern appears in the block
             for pattern, test_name in category_patterns:
                 if re.search(pattern, block_text, re.IGNORECASE):
                     logger.info(f"Pattern matched! Test: {test_name}, Block: {block[:2]}")
-                    result = self._parse_test_line(current_category, test_name, block_text)
+                    result = self._parse_test_line(current_category or "Unknown", test_name, block_text)
 
+                    # we assume this block is about that test
                     if result:
                         reference_range = self._extract_reference_range(block_text, test_name)
                         result["results"]["reference_range"] = reference_range if reference_range else "Not available"
@@ -111,7 +132,6 @@ class MedicalTestParser:
                         logger.info(f"Successfully parsed test: {test_name}")
                     else:
                         logger.warning(f"Failed to parse block: {block[:2]}")
-            
 
         logger.info(f"Medical parser extracted {len(investigations)} investigations")
 
@@ -126,26 +146,6 @@ class MedicalTestParser:
             "error": None
         }
 
-
-    def _extract_reference_range(self, text: str, test_name: str) -> Optional[str]:
-        """Enhanced reference range extraction that checks for common patterns"""
-    
-        # First try to find range in standard formats
-        range_patterns = [
-            r'(?:ref\.?|reference)\s*:\s*([\d\.]+\s*[-–]\s*[\d\.]+)',  # "Ref: 3.5-5.5"
-            r'([\d\.]+\s*[-–]\s*[\d\.]+)\s*\(?ref\.?\)?',             # "3.5-5.5 (Ref)"
-            r'\(([\d\.]+\s*[-–]\s*[\d\.]+)\)',                        # "(3.5-5.5)"
-            r'(?:range|normal)\s*:\s*([\d\.]+\s*[-–]\s*[\d\.]+)',     # "Range: 3.5-5.5"
-            r'[\d\.]+\s*[-–]\s*[\d\.]+$',                            # "76 - 96" at end of line
-        ]
-        
-        for pattern in range_patterns:
-            match = re.search(pattern, text)
-            if match:
-                range_text = match.group(1) if len(match.groups()) > 0 else match.group()
-                return range_text.strip()
-        
-        return None
 
     def _parse_test_line(self, category: str, test_name: str, line: str) -> Optional[Dict]:
         """Enhanced test line parser that handles value, units, and reference range in sequence"""
@@ -197,6 +197,7 @@ class MedicalTestParser:
             }
         }
 
+
     def _split_units_and_range(self, raw_text: str) -> Tuple[Optional[str], Optional[str]]:
         """
         Splits a string containing units and reference range into separate components.
@@ -239,29 +240,6 @@ class MedicalTestParser:
         
         return None, range_part
 
-    def _validate_units(self, raw_units: str) -> Optional[str]:
-        """Check if the extracted units are valid known units"""
-        if not raw_units:
-            return None
-        
-        # Normalize the units string
-        normalized = re.sub(r'\s+', '', raw_units.strip())  # Remove all whitespace
-        
-        # Check against known units
-        for unit in self.common_units:
-            if re.fullmatch(unit.replace('/', '\/'), normalized, re.IGNORECASE):
-                return unit
-        
-        # If not found in common units, check if it's actually a range
-        if self._looks_like_range(normalized):
-            return None
-        
-        # Return the normalized form if we can't classify it
-        return normalized
-
-    def _looks_like_range(self, text: str) -> bool:
-        """Determine if text looks like a reference range"""
-        return bool(re.match(r'^[\d\.]+\s*[-–]\s*[\d\.]+$', text.strip()))
 
     def _extract_flag(self, line: str, value_str: str) -> Optional[str]:
         """Extract flag (H/L) that appears near the value"""
@@ -274,6 +252,27 @@ class MedicalTestParser:
         return flag_match.group(1).upper() if flag_match else None
 
 
+    def _extract_reference_range(self, text: str, test_name: str) -> Optional[str]:
+        """Enhanced reference range extraction that checks for common patterns"""
+    
+        # First try to find range in standard formats
+        range_patterns = [
+            r'(?:ref\.?|reference)\s*:\s*([\d\.]+\s*[-–]\s*[\d\.]+)',  # "Ref: 3.5-5.5"
+            r'([\d\.]+\s*[-–]\s*[\d\.]+)\s*\(?ref\.?\)?',             # "3.5-5.5 (Ref)"
+            r'\(([\d\.]+\s*[-–]\s*[\d\.]+)\)',                        # "(3.5-5.5)"
+            r'(?:range|normal)\s*:\s*([\d\.]+\s*[-–]\s*[\d\.]+)',     # "Range: 3.5-5.5"
+            r'[\d\.]+\s*[-–]\s*[\d\.]+$',                            # "76 - 96" at end of line
+        ]
+        
+        for pattern in range_patterns:
+            match = re.search(pattern, text)
+            if match:
+                range_text = match.group(1) if len(match.groups()) > 0 else match.group()
+                return range_text.strip()
+        
+        return None
+    
+    
     def _extract_specimen(self, line: str, category: str) -> Optional[str]:
         """Extract specimen anywhere in the line from known keywords"""
         VALID_SPECIMENS = {"EDTA", "SERUM", "PLASMA", "WHOLE", "URINE"}
@@ -283,10 +282,6 @@ class MedicalTestParser:
                 return specimen
         return None
         
-
-    def _line_contains_numeric_value(self, line: str) -> bool:
-        """Check if line contains a numeric value that could be a test result"""
-        return bool(re.search(r'\d+\.?\d*', line))
 
     def get_canonical_test_name(self, name: str) -> str:
         """Resolves the canonical name using test_name_fields"""
@@ -306,22 +301,3 @@ class MedicalTestParser:
                     
         return name
     
-    def _normalize_units(self, raw_units: str) -> str:
-        if not raw_units:
-            return ""
-            
-        raw_units = raw_units.strip()
-        for standard_unit, pattern in self.units_patterns.items():
-            if re.search(pattern, raw_units, re.IGNORECASE):
-                return standard_unit
-        
-        # Clean up common unit variations
-        cleaned = re.sub(r'\s+', ' ', raw_units)  # normalize spaces
-        cleaned = re.sub(r'[^\w/%\-\.]', '', cleaned)  # remove special chars except common unit chars
-        
-        if cleaned:
-            logger.debug(f"Using cleaned unit '{cleaned}' from raw '{raw_units}'")
-            return cleaned
-        
-        logger.warning(f"Unrecognized unit '{raw_units}', returning raw.")
-        return raw_units

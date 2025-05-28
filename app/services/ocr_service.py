@@ -16,7 +16,6 @@ import os
 import json
 import asyncio
 import logging
-import re
 from typing import List, Dict
 from app.config import settings
 from fastapi import HTTPException
@@ -25,11 +24,7 @@ from app.utils.medical_parser import MedicalTestParser
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from azure.cognitiveservices.vision.computervision.models import OperationStatusCodes
 from msrest.authentication import CognitiveServicesCredentials
-from app.services.get_test_names import test_name_fields
-from app.utils.table_parser import TableLineParser
 from app.utils.patient_info import PatientInfoExtractor
-from decimal import Decimal, ROUND_HALF_UP
-from app.services.get_test_names import test_name_fields
 
 
 # Set up logging based on environment variable
@@ -58,7 +53,6 @@ class OCRService:
 
         # Initialize medical and table parsers
         self.medical_parser = MedicalTestParser()
-        self.table_parser = TableLineParser()
 
     async def extract_text_from_pdf(self, pdf_bytes: bytes) -> ExtractionResult:
         '''Reads a PDF file, sends it to Azure Read API, and polls for the extracted text'''

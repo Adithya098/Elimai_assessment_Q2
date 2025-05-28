@@ -147,29 +147,6 @@ class MedicalTestParser:
         
         return None
 
-    def _parse_test_with_context(self, category: str, test_name: str, current_line: str, all_lines: List[str], line_index: int) -> Optional[Dict]:
-        """Parse test with context from surrounding lines"""
-        
-        # Combine current line with next 3 lines (where value, units, range typically are)
-        combined_lines = [current_line]
-        for offset in range(1, 4):
-            if line_index + offset < len(all_lines):
-                combined_lines.append(all_lines[line_index + offset])
-        
-        # Try parsing the combined text
-        combined_text = " ".join(combined_lines)
-        result = self._parse_test_line(category, test_name, combined_text)
-        
-        if result:
-            # If we still didn't get reference range, try extracting from combined text
-            if not result.get("results", {}).get("reference_range"):
-                ref_range = self._extract_reference_range(combined_text, test_name)
-                if ref_range:
-                    result["results"]["reference_range"] = ref_range
-            return result
-        
-        return None
-
     def _parse_test_line(self, category: str, test_name: str, line: str) -> Optional[Dict]:
         """Enhanced test line parser that handles value, units, and reference range in sequence"""
         

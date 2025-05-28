@@ -11,25 +11,27 @@ This file:
 - Merges extracted investigations into a final unified list.
 '''
 
-from decimal import ROUND_HALF_UP, Decimal
+import io
 import os
 import json
 import asyncio
 import logging
 import re
 from typing import List, Dict
-
+from app.config import settings
 from fastapi import HTTPException
 from app.models import APIResponse, ExtractionResult
 from app.utils.medical_parser import MedicalTestParser
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from azure.cognitiveservices.vision.computervision.models import OperationStatusCodes
 from msrest.authentication import CognitiveServicesCredentials
-from app.config import settings
 from app.services.template_service import TemplateService
 from app.services.get_test_names import test_name_fields
 from app.utils.table_parser import TableLineParser
-import io
+from app.utils.patient_info import PatientInfoExtractor
+from decimal import Decimal, ROUND_HALF_UP
+from app.services.get_test_names import test_name_fields
+
 
 # Set up logging based on environment variable
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -70,7 +72,7 @@ class OCRService:
             # Convert bytes into stream and initiate OCR read request
             stream = io.BytesIO(pdf_bytes)
             read_response = await asyncio.to_thread(
-                self.client.read_in_stream,
+                self.client.read_in_stream,     # sends the file to Azure's OCR (Optical Character Recognition) service.
                 stream,
                 raw=True
             )
@@ -93,6 +95,7 @@ class OCRService:
         # Retry loop to poll for result
         attempt = 0
         while attempt < self.max_attempts:
+            # it fetches the OCR job status and any results (if available).
             result = await asyncio.to_thread(self.client.get_read_result, operation_id)
 
             # Success case
@@ -118,12 +121,18 @@ class OCRService:
         line_dicts = [{"text": line} for line in lines]
         full_text = "\n".join(lines)
 
+        '''
         # Log some diagnostic output
         logger.debug(f"Full OCR text extracted ({len(full_text)} characters)")
         logger.info(f"Sample OCR lines: {lines[:10]}")
-
+        '''
+        
         # Extract patient metadata
-        patient_info = self.extract_patient_info(full_text)
+        # patient_info = self.extract_patient_info_simplified(full_text)
+        
+        # Extract patient metadata using PatientInfoExtractor from 'patient_info.py'
+        patient_info_extractor = PatientInfoExtractor()
+        patient_info = patient_info_extractor.extract_patient_information({"lines": [{"text": line} for line in lines]})
 
         # Extract tests using template parser
         template_parser = TemplateService(settings.TEMPLATE_PATH)
@@ -153,7 +162,7 @@ class OCRService:
 
         # Return unified result object
         extraction_result = ExtractionResult(
-            patient_information=patient_info,
+            patient_information=patient_info,  
             investigations=investigations,
             source="OCR Document",
             quality_notes=None
@@ -162,8 +171,9 @@ class OCRService:
         logger.info("Extracted Investigations:\n%s", json.dumps(investigations, indent=2))
         return extraction_result
 
-    def extract_patient_info(self, text: str) -> Dict[str, str]:
-        '''Uses regex patterns to extract patient information from text'''
+    '''
+    def extract_patient_info_simplified(self, text: str) -> Dict[str, str]:
+        #Uses regex patterns to extract patient information from text
 
         # Define patterns to match patient metadata
         patterns = {
@@ -193,7 +203,8 @@ class OCRService:
                         value = value[:-2]
                     info[key] = value.split("\n")[0].strip()
         return info
-
+    '''
+    
     def extract_table_investigations(self, read_result) -> List[Dict]:
         '''Extracts investigations from table-formatted OCR lines'''
 
@@ -313,8 +324,6 @@ class OCRService:
             return None
 
 
-    from decimal import Decimal, ROUND_HALF_UP
-
     @staticmethod
     def normalize_test_name(name: str) -> str:
         return re.sub(r'\W+', '', name).lower()
@@ -384,7 +393,6 @@ class OCRService:
                         
         return list(merged.values())
 
-    from app.services.get_test_names import test_name_fields
 
     def get_canonical_test_name(self, name: str) -> str:
         """Map keyword or variant to canonical test name using test_name_fields."""

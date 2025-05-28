@@ -18,7 +18,6 @@ class TestResult(BaseModel):
     # Model to represent a test result with value, units, method, etc.
     value: Optional[Union[str, float, int]] = None
     units: Optional[str] = None
-    method: Optional[str] = None
     reference_range: Optional[str] = None
     flag: Optional[str] = None
     specimen: Optional[str] = None

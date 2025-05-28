@@ -15,15 +15,10 @@ logger = logging.getLogger(__name__)
 
 class MedicalTestParser:
     def __init__(self):
-        self.units_patterns = {
-            'g/dL': r'g\s*/\s*dL|g/dL|gm%',
-            '%': r'%|percent',
-            'fl': r'fl|fL|femtolit(er|re)s?',
-            'pg': r'pg|picograms?',
-            'Cells / Cumm': r'cells?\s*/\s*cumm|cells?\s*per\s*cumm',
-            'Lakhs / Cumm': r'lakhs?\s*/\s*cumm|lakhs?\s*per\s*cumm',
-            'millions / cumm': r'millions?\s*/\s*cumm|millions?\s*per\s*cumm',
-            'thousands / cumm': r'thousands?\s*/\s*cumm|thousands?\s*per\s*cumm'
+        self.common_units = {
+        'g/dL', 'mg/dL', 'ng/mL', 'pg', 'fl', 'IU/L', 'U/L', '%', 
+        'Cells/cumm', 'Lakhs/cumm', 'millions/cumm', 'thousands/cumm',
+        'mEq/L', 'mmol/L', 'fL', 'g/L', 'mg/L', 'ng/dL', 'pg/mL'
         }
 
         self.test_patterns = self._build_test_patterns()
@@ -51,71 +46,72 @@ class MedicalTestParser:
         return patterns
 
     def extract_investigations(self, ocr_data: Dict[str, List[Dict]]) -> Dict:
-        # Extracts medical test results and reference ranges from OCR text based on predefined patterns.
-        
         lines = ocr_data.get("lines", [])
         full_text = ocr_data.get("full_text", "")
-
-        # logger.info(f"Processing {len(lines)} lines for medical parsing")
-
         investigations = []
         current_category = None
-
-        # Keep track of all lines for context-aware parsing
         all_lines = [line_obj.get("text", "").strip() for line_obj in lines]
 
-        for i, line_obj in enumerate(lines):
-            line = line_obj.get("text", "").strip()
-            if not line:
-                continue
+        # --- Step 1: Split into blocks between specimens ---
+        specimen_keywords = {"EDTA", "URINE", "PLASMA", "SERUM", "WHOLE"}
+        blocks = []
+        current_block = []
 
-            logger.debug(f"Line {i}: {line}")
+        for line_obj in lines:
+            text = line_obj.get("text", "").strip()
+            upper_text = text.upper()
 
-            # Try detecting category from header lines
-            lower_line = line.lower()
-            old_category = current_category
+            if any(spec in upper_text for spec in specimen_keywords):
+                if current_block:
+                    blocks.append(current_block)
+                current_block = [text]
+            else:
+                current_block.append(text)
 
-            # More flexible category detection
+        if current_block:
+            blocks.append(current_block)
+
+        logger.info(f"Split OCR lines into {len(blocks)} blocks based on specimen keywords")
+
+        print("\n===== BLOCKS FROM OCR DATA =====")
+        for idx, block in enumerate(blocks):
+            print(f"\n🧱 Block {idx + 1}:")
+            for line in block:
+                print(f"   {line}")
+            print("─" * 50)
+    
+        # --- Step 2: Process blocks ---
+        for block in blocks:
+            block_text = " ".join(block)
+            lower_block_text = block_text.lower()
+
+            # Try detecting category from text
             for cat in self.valid_categories:
-                if (cat.lower() in lower_line or 
-                    any(keyword in lower_line for keyword in [f"{cat}:", f"{cat} test", f"{cat} report", f"{cat} -"])):
-
+                if (cat.lower() in lower_block_text or 
+                    any(keyword in lower_block_text for keyword in [f"{cat}:", f"{cat} test", f"{cat} report", f"{cat} -"])):
                     current_category = cat
-                    logger.info(f"Found category '{cat}' in line: {line}")
+                    logger.info(f"Found category '{cat}' in block: {block[:2]}")
                     break
 
-            if current_category != old_category:
-                logger.info(f"Category changed from {old_category} to {current_category}")
-
             if not current_category:
-                logger.debug(f"No category set, skipping line: {line}")
+                logger.debug("No category set, skipping block.")
                 continue
 
-            # Match known test patterns under current category
             category_patterns = self.test_patterns.get(current_category, [])
-            logger.debug(f"Testing {len(category_patterns)} patterns for category {current_category}")
 
             for pattern, test_name in category_patterns:
-                if re.search(pattern, line, re.IGNORECASE):
-                    logger.info(f"Pattern matched! Test: {test_name}, Line: {line}")
-
-                    # Try to find the actual test result in the next few lines, also extracting reference range
-                    result = self._parse_test_with_context(current_category, test_name, line, all_lines, i)
-
-                    # Extract the reference range for the matched test
-                    reference_range = self._extract_reference_range(full_text, test_name)
+                if re.search(pattern, block_text, re.IGNORECASE):
+                    logger.info(f"Pattern matched! Test: {test_name}, Block: {block[:2]}")
+                    result = self._parse_test_line(current_category, test_name, block_text)
 
                     if result:
-                        # Include reference range if found
-                        result["reference_range"] = reference_range if reference_range else "Not available"
-
+                        reference_range = self._extract_reference_range(block_text, test_name)
+                        result["results"]["reference_range"] = reference_range if reference_range else "Not available"
                         investigations.append(result)
                         logger.info(f"Successfully parsed test: {test_name}")
                     else:
-                        logger.warning(f"Failed to parse matched line and context: {line}")
-                    break
-            else:
-                logger.debug(f"No patterns matched for line: {line}")
+                        logger.warning(f"Failed to parse block: {block[:2]}")
+            
 
         logger.info(f"Medical parser extracted {len(investigations)} investigations")
 
@@ -130,144 +126,186 @@ class MedicalTestParser:
             "error": None
         }
 
+
     def _extract_reference_range(self, text: str, test_name: str) -> Optional[str]:
-        '''Simple extraction of reference range'''
+        """Enhanced reference range extraction that checks for common patterns"""
+    
+        # First try to find range in standard formats
+        range_patterns = [
+            r'(?:ref\.?|reference)\s*:\s*([\d\.]+\s*[-–]\s*[\d\.]+)',  # "Ref: 3.5-5.5"
+            r'([\d\.]+\s*[-–]\s*[\d\.]+)\s*\(?ref\.?\)?',             # "3.5-5.5 (Ref)"
+            r'\(([\d\.]+\s*[-–]\s*[\d\.]+)\)',                        # "(3.5-5.5)"
+            r'(?:range|normal)\s*:\s*([\d\.]+\s*[-–]\s*[\d\.]+)',     # "Range: 3.5-5.5"
+            r'[\d\.]+\s*[-–]\s*[\d\.]+$',                            # "76 - 96" at end of line
+        ]
         
-        # Find the test name in text and look around it for a range pattern
-        test_pos = text.lower().find(test_name.lower())
-        if test_pos == -1:
-            return None
-        
-        # Look in a window around the test (200 chars before and after)
-        start = max(0, test_pos - 100)
-        end = min(len(text), test_pos + len(test_name) + 200)
-        search_text = text[start:end]
-        
-        # Simple pattern for ranges like "40.0 - 65.0"
-        range_pattern = r'(\d+\.?\d*\s*-\s*\d+\.?\d*)'
-        
-        match = re.search(range_pattern, search_text)
-        if match:
-            return match.group(1).strip()
+        for pattern in range_patterns:
+            match = re.search(pattern, text)
+            if match:
+                range_text = match.group(1) if len(match.groups()) > 0 else match.group()
+                return range_text.strip()
         
         return None
-
 
     def _parse_test_with_context(self, category: str, test_name: str, current_line: str, all_lines: List[str], line_index: int) -> Optional[Dict]:
         """Parse test with context from surrounding lines"""
         
-        # Try parsing the current line first
-        result = self._parse_test_line(category, test_name, current_line)
+        # Combine current line with next 3 lines (where value, units, range typically are)
+        combined_lines = [current_line]
+        for offset in range(1, 4):
+            if line_index + offset < len(all_lines):
+                combined_lines.append(all_lines[line_index + offset])
+        
+        # Try parsing the combined text
+        combined_text = " ".join(combined_lines)
+        result = self._parse_test_line(category, test_name, combined_text)
+        
         if result:
-            # If no reference range found, try to extract from current line
+            # If we still didn't get reference range, try extracting from combined text
             if not result.get("results", {}).get("reference_range"):
-                ref_range = self._extract_reference_range(current_line, test_name)
+                ref_range = self._extract_reference_range(combined_text, test_name)
                 if ref_range:
                     result["results"]["reference_range"] = ref_range
             return result
         
-        # If current line doesn't have the value, look in the next few lines
-        search_range = min(5, len(all_lines) - line_index - 1)
-        
-        for offset in range(1, search_range + 1):
-            if line_index + offset < len(all_lines):
-                next_line = all_lines[line_index + offset]
-                
-                # Try combining current line with next line
-                combined_line = f"{current_line} {next_line}"
-                result = self._parse_test_line(category, test_name, combined_line)
-                if result:
-                    # Try to extract reference range from combined context
-                    if not result.get("results", {}).get("reference_range"):
-                        ref_range = self._extract_reference_range(combined_line, test_name)
-                        if ref_range:
-                            result["results"]["reference_range"] = ref_range
-                    logger.debug(f"Found result in combined lines: {combined_line}")
-                    return result
-                
-                # Try parsing just the next line (in case value is on separate line)
-                if self._line_contains_numeric_value(next_line):
-                    result = self._parse_test_line(category, test_name, f"{test_name}: {next_line}")
-                    if result:
-                        logger.debug(f"Found result in next line: {next_line}")
-                        return result
-        
         return None
 
     def _parse_test_line(self, category: str, test_name: str, line: str) -> Optional[Dict]:
-        """Enhanced test line parser with better reference range extraction"""
+        """Enhanced test line parser that handles value, units, and reference range in sequence"""
         
-        logger.debug(f"Parsing line for {test_name}: {line}")
+        # Pattern to match the common structure: value, units, then range
+        pattern = (
+            r'(?P<value>\d+\.?\d*)\s*'  # Value
+            r'(?P<units>[a-zA-Z%/\.]+(?:\s*/\s*[a-zA-Z]+)?)?\s*'  # Units
+            r'(?P<range>[\d\.]+\s*[-–]\s*[\d\.]+)?'  # Reference range
+        )
         
-        # Enhanced parsing patterns that capture reference ranges
-        patterns = [
-            # Pattern 1: Test Name: Value Units [Range] Flag
-            r'(?P<name>.*?)\s*[:\-]\s*(?P<value>\d+\.?\d*)\s*(?P<units>[a-zA-Z%/\.\s]+?)?\s*(?:\[(?P<range>[\d\s\-–to\.]+(?:[a-zA-Z%/\.\s]*)?)\])?\s*(?:\((?P<range2>[\d\s\-–to\.]+(?:[a-zA-Z%/\.\s]*)?)\))?\s*(?P<flag>[HL])?',
-            
-            # Pattern 2: Test Name: Value Units (Reference: range)
-            r'(?P<name>.*?)\s*[:\-]\s*(?P<value>\d+\.?\d*)\s*(?P<units>[a-zA-Z%/\.\s]+?)?\s*(?:reference|ref|normal)?\s*:?\s*(?P<range>[\d\.\s\-–to]+(?:[a-zA-Z%/\.\s]*)?)\s*(?P<flag>[HL])?',
-            
-            # Pattern 3: Value Units Flag Range
-            r'^\s*(?P<value>\d+\.?\d*)\s*(?P<units>[a-zA-Z%/\.\s]+?)?\s*(?P<flag>[HL])?\s*(?P<range>[\d\.\s\-–to]+(?:[a-zA-Z%/\.\s]*)?)\s*$',
-            
-            # Pattern 4: Value Units (range) Flag
-            r'^\s*(?P<value>\d+\.?\d*)\s*(?P<units>[a-zA-Z%/\.\s]+?)?\s*(?:\((?P<range>[\d\s\-–to\.]+(?:[a-zA-Z%/\.\s]*)?)\))?\s*(?P<flag>[HL])?\s*$',
-            
-            # Pattern 5: Simple Value Units Flag
-            r'(?P<value>\d+\.?\d*)\s+(?P<units>[a-zA-Z%/\.]+)\s*(?P<flag>[HL])?',
-            
-            # Pattern 6: Just Value (minimal case)
-            r'(?P<value>\d+\.?\d*)'
-        ]
+        # First try to match the full pattern (value, units, range)
+        match = re.search(pattern, line, re.IGNORECASE)
+        if not match:
+            return None
+        
+        value_str = match.group('value')
+        try:
+            value = float(value_str) if '.' in value_str else int(value_str)
+        except (ValueError, TypeError):
+            return None
+        
+        # Get raw units and validate against known units
+        raw_units = match.group('units')
+        units, ref_range_from_units = self._split_units_and_range(raw_units) if raw_units else (None, None)
+        
+        # Get reference range
+        ref_range = match.group('range')
+        if not ref_range and ref_range_from_units:
+            ref_range = ref_range_from_units
+        
+        logger.debug(f"Split units and range: -> units='{units}', range='{ref_range}'")
+        
+        # Extract specimen from original test name line if available
+        specimen = self._extract_specimen(line, category)
+        
+        # Extract flag (H/L) separately as it might appear after value
+        flag = self._extract_flag(line, value_str)
+        
+        return {
+            "investigation": category,
+            "test_name": self.get_canonical_test_name(test_name),
+            "results": {
+                "value": value,
+                "units": units,
+                "reference_range": ref_range,
+                "flag": flag,
+                "specimen": specimen,
+            }
+        }
 
-        for i, pattern in enumerate(patterns):
-            match = re.search(pattern, line, re.IGNORECASE)
-            if match:
-                logger.debug(f"Pattern {i+1} matched: {match.groupdict()}")
-                
-                value_str = match.group('value')
-                if not value_str:
-                    continue
-                
-                try:
-                    value = float(value_str) if '.' in value_str else int(value_str)
-                except (ValueError, TypeError):
-                    continue
-                
-                units = match.groupdict().get('units', '') or ""
-                units = self._normalize_units(units.strip()) if units else ""
-                
-                flag = match.groupdict().get('flag', '')
-                flag = flag.upper() if flag else None
-                
-                # Get reference range from either range or range2 group
-                ref_range = match.groupdict().get('range') or match.groupdict().get('range2', '')
-                if ref_range:
-                    ref_range = self._normalize_reference_range(ref_range.strip())
-                
-                # If no range found in pattern, try extracting from the full line
-                if not ref_range:
-                    ref_range = self._extract_reference_range(line, test_name)
-                
-                result_data = {
-                    "value": value,
-                    "units": units or None,
-                    "reference_range": ref_range or None,
-                    "flag": flag,
-                    "specimen": "EDTA" if category == "haematology" else "Serum",
-                }
+    def _split_units_and_range(self, raw_text: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Splits a string containing units and reference range into separate components.
+        Handles cases like:
+        - 'millions / cummMale: 4.5 - 5.5' → ('millions/cumm', '4.5 - 5.5')
+        - 'Lakhs / Cumm 1.5 - 4.0' → ('Lakhs/cumm', '1.5 - 4.0')
+        - 'g/dL 3.5-5.5' → ('g/dL', '3.5-5.5')
+        """
+        
+        # First normalize the text by replacing multiple spaces with single space
+        normalized_text = ' '.join(raw_text.split())
+        
+        # Try to find the split point between units and range
+        # Look for the first occurrence of a range pattern in the text
+        range_match = re.search(r'(\d+\.?\d*\s*[-–]\s*\d+\.?\d*)', normalized_text)
+        if not range_match:
+            return normalized_text, None
+        
+        range_start = range_match.start()
+        units_part = normalized_text[:range_start].strip()
+        range_part = range_match.group(1)
+        
+        # Clean up the units part by removing any trailing non-unit characters
+        # This handles cases like "millions / cummMale:" where "Male:" should be removed
+        for unit in sorted(self.common_units, key=lambda x: -len(x)):
+            # Compare case-insensitive and ignoring spaces
+            if unit.replace(" ", "").lower() in units_part.replace(" ", "").lower():
+                # Find the actual unit text in the string (preserving original case)
+                unit_pattern = re.escape(unit).replace(r'\ ', r'\s*')
+                unit_match = re.search(unit_pattern, units_part, re.IGNORECASE)
+                if unit_match:
+                    clean_units = unit_match.group()
+                    return clean_units, range_part
+        
+        # If no known unit matched, try to extract reasonable units before the range
+        # Split at last non-alphanumeric character before the range
+        units_candidate = re.sub(r'[^a-zA-Z/%]', ' ', units_part).strip()
+        if units_candidate:
+            return units_candidate, range_part
+        
+        return None, range_part
 
-                investigation = {
-                    "investigation": category,
-                    "test_name": self.get_canonical_test_name(test_name),
-                    "results": result_data,
-                }
-                
-                logger.debug(f"Successfully created investigation: {investigation}")
-                return investigation
+    def _validate_units(self, raw_units: str) -> Optional[str]:
+        """Check if the extracted units are valid known units"""
+        if not raw_units:
+            return None
+        
+        # Normalize the units string
+        normalized = re.sub(r'\s+', '', raw_units.strip())  # Remove all whitespace
+        
+        # Check against known units
+        for unit in self.common_units:
+            if re.fullmatch(unit.replace('/', '\/'), normalized, re.IGNORECASE):
+                return unit
+        
+        # If not found in common units, check if it's actually a range
+        if self._looks_like_range(normalized):
+            return None
+        
+        # Return the normalized form if we can't classify it
+        return normalized
 
-        logger.debug(f"No patterns matched for line: {line}")
+    def _looks_like_range(self, text: str) -> bool:
+        """Determine if text looks like a reference range"""
+        return bool(re.match(r'^[\d\.]+\s*[-–]\s*[\d\.]+$', text.strip()))
+
+    def _extract_flag(self, line: str, value_str: str) -> Optional[str]:
+        """Extract flag (H/L) that appears near the value"""
+        # Look for H/L flags near the value
+        flag_match = re.search(
+            rf'{re.escape(value_str)}\s*([HL])\b',
+            line,
+            re.IGNORECASE
+        )
+        return flag_match.group(1).upper() if flag_match else None
+
+
+    def _extract_specimen(self, line: str, category: str) -> Optional[str]:
+        """Extract specimen anywhere in the line from known keywords"""
+        VALID_SPECIMENS = {"EDTA", "SERUM", "PLASMA", "WHOLE", "URINE"}
+        line_upper = line.upper()
+        for specimen in VALID_SPECIMENS:
+            if specimen in line_upper:
+                return specimen
         return None
+        
 
     def _line_contains_numeric_value(self, line: str) -> bool:
         """Check if line contains a numeric value that could be a test result"""
